@@ -47,7 +47,7 @@ const testConfigContent = `{
 	"serviceDiscoveryUrl" : "www.aos.com",
 	"iamServerUrl" : "localhost:8089",
 	"iamPublicServerUrl" : "localhost:8090",
-	"fileServerUrl":"localhost:8092",
+	"sotaServerUrl":"localhost:8092",
 	"cmServerUrl":"localhost:8094",
 	"workingDir" : "workingDir",
 	"imageStoreDir": "imagestoreDir",
@@ -297,8 +297,8 @@ func TestCertStorage(t *testing.T) {
 }
 
 func TestFileServer(t *testing.T) {
-	if testCfg.FileServerURL != "localhost:8092" {
-		t.Errorf("Wrong file server URL value: %s", testCfg.FileServerURL)
+	if testCfg.SOTAServerURL != "localhost:8092" {
+		t.Errorf("Wrong file server URL value: %s", testCfg.SOTAServerURL)
 	}
 }
 

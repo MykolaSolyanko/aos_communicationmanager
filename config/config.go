@@ -99,7 +99,7 @@ type Config struct {
 	ServiceDiscoveryURL   string            `json:"serviceDiscoveryUrl"`
 	IAMServerURL          string            `json:"iamServerUrl"`
 	IAMPublicServerURL    string            `json:"iamPublicServerUrl"`
-	FileServerURL         string            `json:"fileServerUrl"`
+	SOTAServerURL         string            `json:"sotaServerUrl"`
 	CMServerURL           string            `json:"cmServerUrl"`
 	Downloader            Downloader        `json:"downloader"`
 	WorkingDir            string            `json:"workingDir"`
