@@ -48,9 +48,11 @@ const testConfigContent = `{
 	"iamServerUrl" : "localhost:8089",
 	"iamPublicServerUrl" : "localhost:8090",
 	"sotaServerUrl":"localhost:8092",
+	"fotaServerUrl":"localhost:8093",
 	"cmServerUrl":"localhost:8094",
 	"workingDir" : "workingDir",
 	"imageStoreDir": "imagestoreDir",
+	"componentsStoreDir": "componentDir",
 	"serviceTtlDays": 30,
 	"layerTtlDays": 40,
 	"unitConfigFile" : "/var/aos/aos_unit.cfg",
@@ -296,9 +298,15 @@ func TestCertStorage(t *testing.T) {
 	}
 }
 
-func TestFileServer(t *testing.T) {
+func TestSOTAFileServer(t *testing.T) {
 	if testCfg.SOTAServerURL != "localhost:8092" {
-		t.Errorf("Wrong file server URL value: %s", testCfg.SOTAServerURL)
+		t.Errorf("Wrong SOTA file server URL value: %s", testCfg.SOTAServerURL)
+	}
+}
+
+func TestFOTAFileServer(t *testing.T) {
+	if testCfg.FOTAServerURL != "localhost:8093" {
+		t.Errorf("Wrong FOTA file server URL value: %s", testCfg.FOTAServerURL)
 	}
 }
 
@@ -317,6 +325,12 @@ func TestGetLayerTTLDays(t *testing.T) {
 func TestGetServiceTTLDays(t *testing.T) {
 	if testCfg.ServiceTTLDays != 30 {
 		t.Errorf("Wrong ServiceTTLDays value: %d", testCfg.ServiceTTLDays)
+	}
+}
+
+func TestComponentStoreDir(t *testing.T) {
+	if testCfg.ComponentsStoreDir != "componentDir" {
+		t.Errorf("Wrong components directory value: %s", testCfg.ComponentsStoreDir)
 	}
 }
 

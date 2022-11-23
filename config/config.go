@@ -100,10 +100,12 @@ type Config struct {
 	IAMServerURL          string            `json:"iamServerUrl"`
 	IAMPublicServerURL    string            `json:"iamPublicServerUrl"`
 	SOTAServerURL         string            `json:"sotaServerUrl"`
+	FOTAServerURL         string            `json:"fotaServerUrl"`
 	CMServerURL           string            `json:"cmServerUrl"`
 	Downloader            Downloader        `json:"downloader"`
 	WorkingDir            string            `json:"workingDir"`
 	ImageStoreDir         string            `json:"imageStoreDir"`
+	ComponentsStoreDir    string            `json:"componentsStoreDir"`
 	UnitConfigFile        string            `json:"unitConfigFile"`
 	ServiceTTLDays        uint64            `json:"serviceTtlDays"`
 	LayerTTLDays          uint64            `json:"layerTtlDays"`
@@ -168,6 +170,10 @@ func New(fileName string) (config *Config, err error) {
 
 	if config.ImageStoreDir == "" {
 		config.ImageStoreDir = path.Join(config.WorkingDir, "imagestore")
+	}
+
+	if config.ComponentsStoreDir == "" {
+		config.ImageStoreDir = path.Join(config.WorkingDir, "components")
 	}
 
 	if config.UnitConfigFile == "" {

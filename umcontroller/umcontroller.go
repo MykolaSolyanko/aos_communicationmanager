@@ -18,36 +18,43 @@
 package umcontroller
 
 import (
+	"encoding/base64"
 	"fmt"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/aoscloud/aos_common/aoserrors"
+	"github.com/aoscloud/aos_common/spaceallocator"
 	"github.com/aoscloud/aos_common/utils/cryptutils"
 	"github.com/looplab/fsm"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/aoscloud/aos_common/api/cloudprotocol"
 	"github.com/aoscloud/aos_communicationmanager/config"
+	"github.com/aoscloud/aos_communicationmanager/fcrypt"
+	"github.com/aoscloud/aos_communicationmanager/fileserver"
 )
 
 /***********************************************************************************************************************
  * Types
  **********************************************************************************************************************/
 
-// URLTranslator translates local URL to remote.
-type URLTranslator interface {
-	TranslateURL(isLocal bool, inURL string) (outURL string, err error)
-}
-
 // Controller update managers controller.
 type Controller struct {
-	storage       storage
-	server        *umCtrlServer
-	urlTranslator URLTranslator
-	eventChannel  chan umCtrlInternalMsg
-	stopChannel   chan bool
+	storage      storage
+	server       *umCtrlServer
+	eventChannel chan umCtrlInternalMsg
+	stopChannel  chan bool
+	componentDir string
+
+	cryptoContext fcrypt.CryptoContext
+
+	allocator spaceallocator.Allocator
 
 	connections       []umConnection
 	currentComponents []cloudprotocol.ComponentStatus
@@ -57,6 +64,8 @@ type Controller struct {
 	updateFinishCond  *sync.Cond
 
 	updateError error
+
+	fileServer *fileserver.FileServer
 }
 
 // SystemComponent information about system component update.
@@ -174,23 +183,34 @@ const (
 
 const connectionTimeout = 300 * time.Second
 
+const fileScheme = "file"
+
 /***********************************************************************************************************************
  * Public
  **********************************************************************************************************************/
 
 // New creates new update managers controller.
-func New(config *config.Config, storage storage, urlTranslator URLTranslator, certProvider CertificateProvider,
-	cryptcoxontext *cryptutils.CryptoContext, insecure bool) (
+func New(config *config.Config, storage storage, certProvider CertificateProvider,
+	cryptcoxontext *cryptutils.CryptoContext, decryptContext fcrypt.CryptoContext, insecure bool) (
 	umCtrl *Controller, err error,
 ) {
 	umCtrl = &Controller{
 		storage:           storage,
-		urlTranslator:     urlTranslator,
 		eventChannel:      make(chan umCtrlInternalMsg),
 		stopChannel:       make(chan bool),
+		componentDir:      path.Join(config.ComponentsStoreDir, "components"),
 		connectionMonitor: allConnectionMonitor{stopTimerChan: make(chan bool, 1), timeoutChan: make(chan bool, 1)},
 		operable:          true,
 		updateFinishCond:  sync.NewCond(&sync.Mutex{}),
+		cryptoContext:     decryptContext,
+	}
+
+	if err := os.MkdirAll(umCtrl.componentDir, 0o755); err != nil {
+		return nil, aoserrors.Wrap(err)
+	}
+
+	if umCtrl.fileServer, err = fileserver.New(config.FOTAServerURL, config.ComponentsStoreDir); err != nil {
+		return nil, aoserrors.Wrap(err)
 	}
 
 	for _, client := range config.UMController.UMClients {
@@ -204,38 +224,16 @@ func New(config *config.Config, storage storage, urlTranslator URLTranslator, ce
 		return umCtrl.connections[i].updatePriority < umCtrl.connections[j].updatePriority
 	})
 
+	allocator, err := spaceallocator.New(umCtrl.componentDir, 0, nil)
+	if err != nil {
+		return nil, aoserrors.Wrap(err)
+	}
+
+	umCtrl.allocator = allocator
+
 	umCtrl.fsm = fsm.NewFSM(
 		stateInit,
-		fsm.Events{
-			// process Idle state
-			{Name: evAllClientsConnected, Src: []string{stateInit}, Dst: stateIdle},
-			{Name: evUpdateRequest, Src: []string{stateIdle}, Dst: statePrepareUpdate},
-			{Name: evContinuePrepare, Src: []string{stateIdle}, Dst: statePrepareUpdate},
-			{Name: evContinueUpdate, Src: []string{stateIdle}, Dst: stateStartUpdate},
-			{Name: evContinueApply, Src: []string{stateIdle}, Dst: stateStartApply},
-			{Name: evContinueRevert, Src: []string{stateIdle}, Dst: stateStartRevert},
-			// process prepare
-			{Name: evUmStateUpdated, Src: []string{statePrepareUpdate}, Dst: stateUpdateUmStatusOnPrepareUpdate},
-			{Name: evContinue, Src: []string{stateUpdateUmStatusOnPrepareUpdate}, Dst: statePrepareUpdate},
-			// process start update
-			{Name: evUpdatePrepared, Src: []string{statePrepareUpdate}, Dst: stateStartUpdate},
-			{Name: evUmStateUpdated, Src: []string{stateStartUpdate}, Dst: stateUpdateUmStatusOnStartUpdate},
-			{Name: evContinue, Src: []string{stateUpdateUmStatusOnStartUpdate}, Dst: stateStartUpdate},
-			// process start apply
-			{Name: evSystemUpdated, Src: []string{stateStartUpdate}, Dst: stateStartApply},
-			{Name: evUmStateUpdated, Src: []string{stateStartApply}, Dst: stateUpdateUmStatusOnStartApply},
-			{Name: evContinue, Src: []string{stateUpdateUmStatusOnStartApply}, Dst: stateStartApply},
-			{Name: evApplyComplete, Src: []string{stateStartApply}, Dst: stateIdle},
-			// process revert
-			{Name: evUpdateFailed, Src: []string{statePrepareUpdate}, Dst: stateStartRevert},
-			{Name: evUpdateFailed, Src: []string{stateStartUpdate}, Dst: stateStartRevert},
-			{Name: evUpdateFailed, Src: []string{stateStartApply}, Dst: stateStartRevert},
-			{Name: evUmStateUpdated, Src: []string{stateStartRevert}, Dst: stateUpdateUmStatusOnRevert},
-			{Name: evContinue, Src: []string{stateUpdateUmStatusOnRevert}, Dst: stateStartRevert},
-			{Name: evSystemReverted, Src: []string{stateStartRevert}, Dst: stateIdle},
-
-			{Name: evConnectionTimeout, Src: []string{stateInit}, Dst: stateFaultState},
-		},
+		getFsmEvent(),
 		fsm.Callbacks{
 			"enter_" + stateIdle:                          umCtrl.processIdleState,
 			"enter_" + statePrepareUpdate:                 umCtrl.processPrepareState,
@@ -276,6 +274,12 @@ func New(config *config.Config, storage storage, urlTranslator URLTranslator, ce
 
 // Close close server.
 func (umCtrl *Controller) Close() {
+	if umCtrl.fileServer != nil {
+		if err := umCtrl.fileServer.Close(); err != nil {
+			log.Errorf("Can't close file server: %v", err)
+		}
+	}
+
 	umCtrl.operable = false
 	umCtrl.stopChannel <- true
 }
@@ -294,7 +298,8 @@ func (umCtrl *Controller) GetStatus() ([]cloudprotocol.ComponentStatus, error) {
 
 // UpdateComponents updates components.
 func (umCtrl *Controller) UpdateComponents(
-	components []cloudprotocol.ComponentInfo,
+	components []cloudprotocol.ComponentInfo, chains []cloudprotocol.CertificateChain,
+	certs []cloudprotocol.Certificate,
 ) ([]cloudprotocol.ComponentStatus, error) {
 	log.Debug("Update components")
 
@@ -317,11 +322,54 @@ func (umCtrl *Controller) UpdateComponents(
 
 			componentInfo := SystemComponent{
 				ID: component.ID, VendorVersion: component.VendorVersion,
-				AosVersion: component.AosVersion, URL: component.URLs[0], Annotations: string(component.Annotations),
+				AosVersion: component.AosVersion, Annotations: string(component.Annotations),
 				Sha256: component.Sha256, Sha512: component.Sha512, Size: component.Size,
 			}
 
-			if err := umCtrl.addComponentForUpdateToUm(componentInfo); err != nil {
+			encryptedFile, err := getFilePath(component.URLs[0])
+			if err != nil {
+				return umCtrl.currentComponents, aoserrors.Wrap(err)
+			}
+
+			decryptedFile := path.Join(umCtrl.componentDir, base64.URLEncoding.EncodeToString(component.Sha256))
+
+			space, err := umCtrl.allocator.AllocateSpace(component.Size)
+			if err != nil {
+				return umCtrl.currentComponents, aoserrors.Wrap(err)
+			}
+
+			defer func() {
+				if err != nil {
+					releaseAllocatedSpace(decryptedFile, space)
+
+					return
+				}
+
+				if err := space.Accept(); err != nil {
+					log.Errorf("Can't accept memory: %v", err)
+				}
+			}()
+
+			if err = fcrypt.DecryptAndValidate(fcrypt.DecryptParams{
+				EncryptedFile:  encryptedFile,
+				DecryptedFile:  decryptedFile,
+				Chains:         chains,
+				Certs:          certs,
+				DecryptionInfo: component.DecryptionInfo,
+				Signs:          component.Signs,
+				CryptoContext:  umCtrl.cryptoContext,
+			}); err != nil {
+				return umCtrl.currentComponents, aoserrors.Wrap(err)
+			}
+
+			url := url.URL{
+				Scheme: fileScheme,
+				Path:   decryptedFile,
+			}
+
+			componentInfo.URL = url.String()
+
+			if err = umCtrl.addComponentForUpdateToUm(componentInfo); err != nil {
 				return umCtrl.currentComponents, aoserrors.Wrap(err)
 			}
 
@@ -610,7 +658,7 @@ func (umCtrl *Controller) addComponentForUpdateToUm(componentInfo SystemComponen
 	for i := range umCtrl.connections {
 		for _, id := range umCtrl.connections[i].components {
 			if id == componentInfo.ID {
-				newURL, err := umCtrl.urlTranslator.TranslateURL(umCtrl.connections[i].isLocalClient, componentInfo.URL)
+				newURL, err := umCtrl.fileServer.TranslateURL(umCtrl.connections[i].isLocalClient, componentInfo.URL)
 				if err != nil {
 					return aoserrors.Wrap(err)
 				}
@@ -629,7 +677,25 @@ func (umCtrl *Controller) addComponentForUpdateToUm(componentInfo SystemComponen
 
 func (umCtrl *Controller) cleanupUpdateData() {
 	for i := range umCtrl.connections {
+		for _, updatePackage := range umCtrl.connections[i].updatePackages {
+			umCtrl.allocator.FreeSpace(updatePackage.Size)
+		}
+
 		umCtrl.connections[i].updatePackages = []SystemComponent{}
+	}
+
+	entries, err := os.ReadDir(umCtrl.componentDir)
+	if err != nil {
+		log.Errorf("Can't read component directory: %v", err)
+
+		return
+	}
+
+	for _, entry := range entries {
+		componentFile := filepath.Join(umCtrl.componentDir, entry.Name())
+		if err := os.RemoveAll(componentFile); err != nil {
+			log.Errorf("Can't remove decrypted file: %v", err)
+		}
 	}
 
 	updatecomponents, err := umCtrl.storage.GetComponentsUpdateInfo()
@@ -693,6 +759,62 @@ func (monitor *allConnectionMonitor) startConnectionTimer(connectionsCount int) 
 
 func (monitor *allConnectionMonitor) stopConnectionTimer() {
 	monitor.stopTimerChan <- true
+}
+
+func getFsmEvent() fsm.Events {
+	return fsm.Events{
+		// process Idle state
+		{Name: evAllClientsConnected, Src: []string{stateInit}, Dst: stateIdle},
+		{Name: evUpdateRequest, Src: []string{stateIdle}, Dst: statePrepareUpdate},
+		{Name: evContinuePrepare, Src: []string{stateIdle}, Dst: statePrepareUpdate},
+		{Name: evContinueUpdate, Src: []string{stateIdle}, Dst: stateStartUpdate},
+		{Name: evContinueApply, Src: []string{stateIdle}, Dst: stateStartApply},
+		{Name: evContinueRevert, Src: []string{stateIdle}, Dst: stateStartRevert},
+		// process prepare
+		{Name: evUmStateUpdated, Src: []string{statePrepareUpdate}, Dst: stateUpdateUmStatusOnPrepareUpdate},
+		{Name: evContinue, Src: []string{stateUpdateUmStatusOnPrepareUpdate}, Dst: statePrepareUpdate},
+		// process start update
+		{Name: evUpdatePrepared, Src: []string{statePrepareUpdate}, Dst: stateStartUpdate},
+		{Name: evUmStateUpdated, Src: []string{stateStartUpdate}, Dst: stateUpdateUmStatusOnStartUpdate},
+		{Name: evContinue, Src: []string{stateUpdateUmStatusOnStartUpdate}, Dst: stateStartUpdate},
+		// process start apply
+		{Name: evSystemUpdated, Src: []string{stateStartUpdate}, Dst: stateStartApply},
+		{Name: evUmStateUpdated, Src: []string{stateStartApply}, Dst: stateUpdateUmStatusOnStartApply},
+		{Name: evContinue, Src: []string{stateUpdateUmStatusOnStartApply}, Dst: stateStartApply},
+		{Name: evApplyComplete, Src: []string{stateStartApply}, Dst: stateIdle},
+		// process revert
+		{Name: evUpdateFailed, Src: []string{statePrepareUpdate}, Dst: stateStartRevert},
+		{Name: evUpdateFailed, Src: []string{stateStartUpdate}, Dst: stateStartRevert},
+		{Name: evUpdateFailed, Src: []string{stateStartApply}, Dst: stateStartRevert},
+		{Name: evUmStateUpdated, Src: []string{stateStartRevert}, Dst: stateUpdateUmStatusOnRevert},
+		{Name: evContinue, Src: []string{stateUpdateUmStatusOnRevert}, Dst: stateStartRevert},
+		{Name: evSystemReverted, Src: []string{stateStartRevert}, Dst: stateIdle},
+
+		{Name: evConnectionTimeout, Src: []string{stateInit}, Dst: stateFaultState},
+	}
+}
+
+func releaseAllocatedSpace(filePath string, space spaceallocator.Space) {
+	if err := os.RemoveAll(filePath); err != nil {
+		log.Errorf("Can't remove decrypted file: %v", err)
+	}
+
+	if err := space.Release(); err != nil {
+		log.Errorf("Can't release memory: %v", err)
+	}
+}
+
+func getFilePath(fileURL string) (string, error) {
+	urlData, err := url.Parse(fileURL)
+	if err != nil {
+		return "", aoserrors.Wrap(err)
+	}
+
+	if urlData.Scheme != fileScheme {
+		return "", aoserrors.New("unexpected schema")
+	}
+
+	return urlData.Path, nil
 }
 
 /***********************************************************************************************************************
