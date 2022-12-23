@@ -374,13 +374,8 @@ func (allocator *allocatorInstance) removeOutdatedItems(requiredSize uint64) (fr
 
 	sort.Sort(byTimestamp(allocator.part.outdatedItems))
 
-	i := 0
-
-	for _, item := range allocator.part.outdatedItems {
+	for i, item := range allocator.part.outdatedItems {
 		if item.allocator != allocator {
-			allocator.part.outdatedItems[i] = item
-			i++
-
 			continue
 		}
 
@@ -396,12 +391,15 @@ func (allocator *allocatorInstance) removeOutdatedItems(requiredSize uint64) (fr
 
 		freedSize += item.size
 
+		// arr = append(arr[:i], arr[i+1:]...)
+		allocator.part.outdatedItems = append(allocator.part.outdatedItems[:i], allocator.part.outdatedItems[i+1:]...)
+
 		if freedSize >= requiredSize {
 			break
 		}
 	}
 
-	allocator.part.outdatedItems = allocator.part.outdatedItems[:i]
+	// allocator.part.outdatedItems = allocator.part.outdatedItems[:i]
 
 	return freedSize, nil
 }

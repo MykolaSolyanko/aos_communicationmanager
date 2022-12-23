@@ -592,6 +592,8 @@ func (downloader *Downloader) download(url string, result *downloadResult) (err 
 		}
 	}
 
+	log.Infof("Download target type !!!!!! %s", result.packageInfo.TargetType)
+
 	downloadInfo := DownloadInfo{
 		Path:       result.downloadFileName,
 		TargetType: result.packageInfo.TargetType,

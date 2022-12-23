@@ -18,6 +18,7 @@
 package umcontroller
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/url"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/aoscloud/aos_common/aoserrors"
+	"github.com/aoscloud/aos_common/image"
 	"github.com/aoscloud/aos_common/spaceallocator"
 	"github.com/aoscloud/aos_common/utils/cryptutils"
 	"github.com/looplab/fsm"
@@ -215,7 +217,7 @@ func New(config *config.Config, storage storage, certProvider CertificateProvide
 	}
 
 	if umCtrl.fileServer, err = fileserver.New(
-		config.UMController.FileServerURL, config.ComponentsDir); err != nil {
+		config.UMController.FileServerURL, umCtrl.componentDir); err != nil {
 		return nil, aoserrors.Wrap(err)
 	}
 
@@ -303,12 +305,6 @@ func (umCtrl *Controller) UpdateComponents(
 				aosVersion: component.AosVersion, status: cloudprotocol.DownloadedStatus,
 			}
 
-			componentInfo := SystemComponent{
-				ID: component.ID, VendorVersion: component.VendorVersion,
-				AosVersion: component.AosVersion, Annotations: string(component.Annotations),
-				Sha256: component.Sha256, Sha512: component.Sha512, Size: component.Size,
-			}
-
 			encryptedFile, err := getFilePath(component.URLs[0])
 			if err != nil {
 				return umCtrl.currentComponents, aoserrors.Wrap(err)
@@ -343,12 +339,24 @@ func (umCtrl *Controller) UpdateComponents(
 				return umCtrl.currentComponents, aoserrors.Wrap(err)
 			}
 
+			fileInfo, err := image.CreateFileInfo(context.Background(), decryptedFile)
+			if err != nil {
+				return umCtrl.currentComponents, aoserrors.Wrap(err)
+			}
+
 			url := url.URL{
 				Scheme: fileScheme,
 				Path:   decryptedFile,
 			}
 
-			componentInfo.URL = url.String()
+			componentInfo := SystemComponent{
+				ID: component.ID, VendorVersion: component.VendorVersion,
+				AosVersion: component.AosVersion, Annotations: string(component.Annotations),
+				Sha256: fileInfo.Sha256, Sha512: fileInfo.Sha512, Size: fileInfo.Size,
+				URL: url.String(),
+			}
+
+			log.Infof("Component URL !!!!!!!!!!!!!! %s", componentInfo.URL)
 
 			if err = umCtrl.addComponentForUpdateToUm(componentInfo); err != nil {
 				return umCtrl.currentComponents, aoserrors.Wrap(err)
@@ -645,6 +653,7 @@ func (umCtrl *Controller) addComponentForUpdateToUm(componentInfo SystemComponen
 				}
 
 				componentInfo.URL = newURL
+				log.Infof("Path after translate !!!!!!!!!!!!!!!! %s", componentInfo.URL)
 
 				umCtrl.connections[i].updatePackages = append(umCtrl.connections[i].updatePackages, componentInfo)
 
@@ -802,6 +811,8 @@ func (monitor *allConnectionMonitor) stopConnectionTimer() {
 }
 
 func releaseAllocatedSpace(filePath string, space spaceallocator.Space) {
+	log.Infof("releaseAllocatedSpace!!!!!!!!!!!!!!!!!!!!!")
+
 	if err := os.RemoveAll(filePath); err != nil {
 		log.Errorf("Can't remove decrypted file: %v", err)
 	}
