@@ -36,6 +36,7 @@ import (
 	"github.com/aoscloud/aos_communicationmanager/downloader"
 	"github.com/aoscloud/aos_communicationmanager/imagemanager"
 	"github.com/aoscloud/aos_communicationmanager/launcher"
+	"github.com/aoscloud/aos_communicationmanager/networkmanager"
 	"github.com/aoscloud/aos_communicationmanager/storagestate"
 	"github.com/aoscloud/aos_communicationmanager/umcontroller"
 )
@@ -127,6 +128,10 @@ func New(config *config.Config) (db *Database, err error) {
 	}
 
 	if err := db.createStorageStateTable(); err != nil {
+		return db, err
+	}
+
+	if err := db.createNetworkTable(); err != nil {
 		return db, err
 	}
 
@@ -363,8 +368,9 @@ func (db *Database) GetServicesInfo() ([]imagemanager.ServiceInfo, error) {
 // GetServiceInfo returns service info by ID.
 func (db *Database) GetServiceInfo(serviceID string) (service imagemanager.ServiceInfo, err error) {
 	var (
-		configJSON []byte
-		layers     []byte
+		configJSON  []byte
+		layers      []byte
+		imageConfig []byte
 	)
 
 	if err = db.getDataFromQuery(
@@ -372,7 +378,7 @@ func (db *Database) GetServiceInfo(serviceID string) (service imagemanager.Servi
 		[]any{serviceID, serviceID},
 		&service.ID, &service.AosVersion, &service.ProviderID, &service.VendorVersion, &service.Description,
 		&service.URL, &service.RemoteURL, &service.Path, &service.Size, &service.Timestamp, &service.Cached,
-		&configJSON, &layers, &service.Sha256, &service.Sha512, &service.GID); err != nil {
+		&configJSON, &imageConfig, &layers, &service.Sha256, &service.Sha512, &service.GID); err != nil {
 		if errors.Is(err, errNotExist) {
 			return service, imagemanager.ErrNotExist
 		}
@@ -385,6 +391,10 @@ func (db *Database) GetServiceInfo(serviceID string) (service imagemanager.Servi
 	}
 
 	if err = json.Unmarshal(layers, &service.Layers); err != nil {
+		return service, aoserrors.Wrap(err)
+	}
+
+	if err = json.Unmarshal(imageConfig, &service.ImageConfig); err != nil {
 		return service, aoserrors.Wrap(err)
 	}
 
@@ -403,10 +413,15 @@ func (db *Database) AddService(service imagemanager.ServiceInfo) error {
 		return aoserrors.Wrap(err)
 	}
 
-	return db.executeQuery("INSERT INTO services values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	imageConfig, err := json.Marshal(&service.ImageConfig)
+	if err != nil {
+		return aoserrors.Wrap(err)
+	}
+
+	return db.executeQuery("INSERT INTO services values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		service.ID, service.AosVersion, service.ProviderID, service.VendorVersion, service.Description,
 		service.URL, service.RemoteURL, service.Path, service.Size, service.Timestamp, service.Cached,
-		configJSON, layers, service.Sha256, service.Sha512, service.GID)
+		configJSON, imageConfig, layers, service.Sha256, service.Sha512, service.GID)
 }
 
 // SetServiceCached sets cached status for the service.
@@ -629,6 +644,48 @@ func (db *Database) RemoveStorageStateInfo(instanceIdent aostypes.InstanceIdent)
 	return err
 }
 
+func (db *Database) AddNetworkInstanceInfo(networkInfo networkmanager.NetworkInfo) error {
+	return db.executeQuery("INSERT INTO network values(?, ?, ?, ?, ?, ?)",
+		networkInfo.ServiceID, networkInfo.SubjectID, networkInfo.Instance, networkInfo.NetworkID,
+		networkInfo.IP, networkInfo.Config)
+}
+
+func (db *Database) RemoveNetworkInstanceInfo(instanceIdent aostypes.InstanceIdent) (err error) {
+	if err = db.executeQuery(
+		"DELETE FROM network WHERE serviceID = ? AND subjectID = ? AND instance = ?",
+		instanceIdent.ServiceID, instanceIdent.SubjectID,
+		instanceIdent.Instance); errors.Is(err, errNotExist) {
+		return nil
+	}
+
+	return err
+}
+
+func (db *Database) GetNetworkInstancesInfo() (networkInfos []networkmanager.NetworkInfo, err error) {
+	rows, err := db.sql.Query("SELECT * FROM network")
+	if err != nil {
+		return nil, aoserrors.Wrap(err)
+	}
+	defer rows.Close()
+
+	if rows.Err() != nil {
+		return nil, aoserrors.Wrap(rows.Err())
+	}
+
+	for rows.Next() {
+		var networkInfo networkmanager.NetworkInfo
+
+		if err = rows.Scan(&networkInfo.ServiceID, &networkInfo.SubjectID, &networkInfo.Instance,
+			&networkInfo.NetworkID, &networkInfo.IP, &networkInfo.Config); err != nil {
+			return nil, aoserrors.Wrap(err)
+		}
+
+		networkInfos = append(networkInfos, networkInfo)
+	}
+
+	return networkInfos, nil
+}
+
 // Close closes database.
 func (db *Database) Close() {
 	db.sql.Close()
@@ -706,6 +763,7 @@ func (db *Database) createServiceTable() (err error) {
                                                                timestamp TIMESTAMP,
                                                                cached INTEGER,
                                                                config BLOB,
+                                                               imageConfig BLOB,
                                                                layers BLOB,
                                                                sha256 BLOB,
                                                                sha512 BLOB,
@@ -743,6 +801,20 @@ func (db *Database) createInstancesTable() (err error) {
                                                                 instance INTEGER,
                                                                 uid integer,
                                                                 PRIMARY KEY(serviceId, subjectId, instance))`)
+
+	return aoserrors.Wrap(err)
+}
+
+func (db *Database) createNetworkTable() (err error) {
+	log.Info("Create network table")
+
+	_, err = db.sql.Exec(`CREATE TABLE IF NOT EXISTS network (serviceId TEXT,
+                                                              subjectId TEXT,
+                                                              instance INTEGER,
+                                                              networkID integer,
+															  ip TEXT,
+															  config BLOB,
+                                                              PRIMARY KEY(serviceId, subjectId, instance))`)
 
 	return aoserrors.Wrap(err)
 }
@@ -816,14 +888,15 @@ func (db *Database) getServicesFromQuery(
 
 	for rows.Next() {
 		var (
-			service    imagemanager.ServiceInfo
-			configJSON []byte
-			layers     []byte
+			service     imagemanager.ServiceInfo
+			configJSON  []byte
+			layers      []byte
+			imageConfig []byte
 		)
 
 		if err = rows.Scan(&service.ID, &service.AosVersion, &service.ProviderID, &service.VendorVersion,
 			&service.Description, &service.URL, &service.RemoteURL, &service.Path, &service.Size,
-			&service.Timestamp, &service.Cached, &configJSON, &layers, &service.Sha256,
+			&service.Timestamp, &service.Cached, &configJSON, &imageConfig, &layers, &service.Sha256,
 			&service.Sha512, &service.GID); err != nil {
 			return nil, aoserrors.Wrap(err)
 		}
@@ -833,6 +906,10 @@ func (db *Database) getServicesFromQuery(
 		}
 
 		if err = json.Unmarshal(layers, &service.Layers); err != nil {
+			return nil, aoserrors.Wrap(err)
+		}
+
+		if err = json.Unmarshal(imageConfig, &service.ImageConfig); err != nil {
 			return nil, aoserrors.Wrap(err)
 		}
 

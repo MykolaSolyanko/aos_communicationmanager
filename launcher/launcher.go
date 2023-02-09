@@ -35,6 +35,7 @@ import (
 
 	"github.com/aoscloud/aos_communicationmanager/config"
 	"github.com/aoscloud/aos_communicationmanager/imagemanager"
+	"github.com/aoscloud/aos_communicationmanager/networkmanager"
 	"github.com/aoscloud/aos_communicationmanager/storagestate"
 	"github.com/aoscloud/aos_communicationmanager/unitstatushandler"
 	"github.com/aoscloud/aos_communicationmanager/utils/uidgidpool"
@@ -76,6 +77,7 @@ type Launcher struct {
 	imageProvider           ImageProvider
 	resourceManager         ResourceManager
 	storageStateProvider    StorageStateProvider
+	networkManager          NetworkManager
 	runStatusChannel        chan unitstatushandler.RunInstancesStatus
 	nodes                   []*nodeStatus
 	uidPool                 *uidgidpool.IdentifierPool
@@ -95,6 +97,14 @@ type Storage interface {
 	GetAllUIDs() ([]int, error)
 	SetDesiredInstances(instances json.RawMessage) error
 	GetDesiredInstances() (instances json.RawMessage, err error)
+}
+
+// NetworkManager network manager interface.
+type NetworkManager interface {
+	PrepareInstanceNetworkConf(
+		instanceIdent aostypes.InstanceIdent, networkID string, params networkmanager.NetworkParams) ([]byte, error)
+	RemoveInstanceNetworkConf(instanceIdent aostypes.InstanceIdent, networkID string)
+	GetInstances(networkID string) []aostypes.InstanceIdent
 }
 
 // ImageProvider provides image information.
@@ -159,11 +169,12 @@ type runRequestInfo struct {
 // New creates launcher instance.
 func New(
 	config *config.Config, storage Storage, nodeManager NodeManager, imageProvider ImageProvider,
-	resourceManager ResourceManager, storageStateProvider StorageStateProvider,
+	resourceManager ResourceManager, storageStateProvider StorageStateProvider, networkManager NetworkManager,
 ) (launcher *Launcher, err error) {
 	launcher = &Launcher{
 		config: config, storage: storage, nodeManager: nodeManager, imageProvider: imageProvider,
 		resourceManager: resourceManager, storageStateProvider: storageStateProvider,
+		networkManager:   networkManager,
 		runStatusChannel: make(chan unitstatushandler.RunInstancesStatus, 10),
 		nodes:            []*nodeStatus{},
 		uidPool:          uidgidpool.NewUserIDPool(),
@@ -633,6 +644,8 @@ instancesLoop:
 			continue
 		}
 
+		launcher.removeInstanceNetworkConfiguration(instance, serviceInfo.ProviderID)
+
 		for instanceIndex := uint64(0); instanceIndex < instance.NumInstances; instanceIndex++ {
 			instanceInfo, err := launcher.prepareInstanceStartInfo(serviceInfo, instance, instanceIndex)
 			if err != nil {
@@ -659,6 +672,28 @@ instancesLoop:
 	}
 
 	return errStatus
+}
+
+func (launcher *Launcher) removeInstanceNetworkConfiguration(
+	instance cloudprotocol.InstanceInfo, networkID string,
+) {
+	networkInstances := launcher.networkManager.GetInstances(networkID)
+
+nextNetInstance:
+	for _, netInstance := range networkInstances {
+		for instanceIndex := uint64(0); instanceIndex < instance.NumInstances; instanceIndex++ {
+			instanceIdent := aostypes.InstanceIdent{
+				ServiceID: instance.ServiceID, SubjectID: instance.SubjectID,
+				Instance: instanceIndex,
+			}
+
+			if netInstance == instanceIdent {
+				continue nextNetInstance
+			}
+		}
+
+		launcher.networkManager.RemoveInstanceNetworkConf(netInstance, networkID)
+	}
 }
 
 func (launcher *Launcher) prepareInstanceStartInfo(service imagemanager.ServiceInfo,
@@ -709,6 +744,41 @@ func (launcher *Launcher) prepareInstanceStartInfo(service imagemanager.ServiceI
 		_ = launcher.uidPool.RemoveID(uid)
 
 		return instanceInfo, aoserrors.Errorf("can't setup storage and state for instance: %v", err)
+	}
+
+	networkParams := networkmanager.NetworkParams{}
+
+	if service.Config.Quotas.DownloadSpeed != nil {
+		networkParams.IngressKbit = *service.Config.Quotas.DownloadSpeed
+	}
+
+	if service.Config.Quotas.UploadSpeed != nil {
+		networkParams.EgressKbit = *service.Config.Quotas.UploadSpeed
+	}
+
+	if service.Config.Quotas.DownloadLimit != nil {
+		networkParams.DownloadLimit = *service.Config.Quotas.DownloadLimit
+	}
+
+	if service.Config.Quotas.UploadLimit != nil {
+		networkParams.UploadLimit = *service.Config.Quotas.UploadLimit
+	}
+
+	networkParams.ExposedPorts = make([]string, 0, len(service.ImageConfig.Config.ExposedPorts))
+
+	for key := range service.ImageConfig.Config.ExposedPorts {
+		networkParams.ExposedPorts = append(networkParams.ExposedPorts, key)
+	}
+
+	networkParams.AllowedConnections = make([]string, 0, len(service.Config.AllowedConnections))
+
+	for key := range service.Config.AllowedConnections {
+		networkParams.AllowedConnections = append(networkParams.AllowedConnections, key)
+	}
+
+	if instanceInfo.NetworkConfiguration, err = launcher.networkManager.PrepareInstanceNetworkConf(
+		instanceInfo.InstanceIdent, service.ProviderID, networkParams); err != nil {
+		return instanceInfo, aoserrors.Wrap(err)
 	}
 
 	return instanceInfo, nil

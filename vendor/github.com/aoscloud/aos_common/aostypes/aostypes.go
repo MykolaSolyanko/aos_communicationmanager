@@ -169,10 +169,11 @@ type InstanceIdent struct {
 // InstanceInfo instance information to start it.
 type InstanceInfo struct {
 	InstanceIdent
-	UID         uint32 `json:"uid"`
-	Priority    uint64 `json:"priority"`
-	StoragePath string `json:"storagePath"`
-	StatePath   string `json:"statePath"`
+	UID                  uint32 `json:"uid"`
+	Priority             uint64 `json:"priority"`
+	StoragePath          string `json:"storagePath"`
+	StatePath            string `json:"statePath"`
+	NetworkConfiguration []byte `json:"networkConfiguration"`
 }
 
 // ServiceManifest Aos service manifest.

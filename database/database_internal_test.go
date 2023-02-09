@@ -30,12 +30,14 @@ import (
 
 	"github.com/aoscloud/aos_common/aostypes"
 	"github.com/aoscloud/aos_common/api/cloudprotocol"
+	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/aoscloud/aos_communicationmanager/config"
 	"github.com/aoscloud/aos_communicationmanager/downloader"
 	"github.com/aoscloud/aos_communicationmanager/imagemanager"
 	"github.com/aoscloud/aos_communicationmanager/launcher"
+	"github.com/aoscloud/aos_communicationmanager/networkmanager"
 	"github.com/aoscloud/aos_communicationmanager/storagestate"
 	"github.com/aoscloud/aos_communicationmanager/umcontroller"
 )
@@ -279,6 +281,14 @@ func TestServiceStore(t *testing.T) {
 						DownloadSpeed: allocateUint64(1000),
 					},
 				},
+				ImageConfig: imagespec.Image{
+					Config: imagespec.ImageConfig{
+						ExposedPorts: map[string]struct{}{
+							"10001": {},
+							"10002": {},
+						},
+					},
+				},
 			},
 			expectedServiceVersionsCount: 1,
 			expectedServiceCount:         1,
@@ -470,6 +480,132 @@ func TestLayerStore(t *testing.T) {
 
 		if _, err := db.GetServiceInfo(tCase.layer.Digest); !errors.Is(err, imagemanager.ErrNotExist) {
 			t.Errorf("Unexpected error: %v", err)
+		}
+	}
+}
+
+func TestNetworkConfiguration(t *testing.T) {
+	casesAdd := []struct {
+		networkInfo networkmanager.NetworkInfo
+	}{
+		{
+			networkInfo: networkmanager.NetworkInfo{
+				InstanceIdent: aostypes.InstanceIdent{
+					ServiceID: "service1",
+					SubjectID: "subject1",
+					Instance:  1,
+				},
+				NetworkID: "network1",
+				IP:        "192.168.1.1",
+				Config:    []byte("network 1 config"),
+			},
+		},
+		{
+			networkInfo: networkmanager.NetworkInfo{
+				InstanceIdent: aostypes.InstanceIdent{
+					ServiceID: "service1",
+					SubjectID: "subject2",
+					Instance:  1,
+				},
+				NetworkID: "network2",
+				IP:        "192.169.1.1",
+				Config:    []byte("network 2 config"),
+			},
+		},
+		{
+			networkInfo: networkmanager.NetworkInfo{
+				InstanceIdent: aostypes.InstanceIdent{
+					ServiceID: "service1",
+					SubjectID: "subject2",
+					Instance:  2,
+				},
+				NetworkID: "network2",
+				IP:        "192.169.1.2",
+				Config:    []byte("network 2 config"),
+			},
+		},
+	}
+
+	for _, tCase := range casesAdd {
+		if err := db.AddNetworkInstanceInfo(tCase.networkInfo); err != nil {
+			t.Errorf("Can't add network info: %v", err)
+		}
+	}
+
+	casesRemove := []struct {
+		expectedNetworkInfo []networkmanager.NetworkInfo
+		removeInstance      aostypes.InstanceIdent
+	}{
+		{
+			removeInstance: aostypes.InstanceIdent{
+				ServiceID: "service1",
+				SubjectID: "subject1",
+				Instance:  1,
+			},
+			expectedNetworkInfo: []networkmanager.NetworkInfo{
+				{
+					InstanceIdent: aostypes.InstanceIdent{
+						ServiceID: "service1",
+						SubjectID: "subject2",
+						Instance:  1,
+					},
+					IP:        "192.169.1.1",
+					NetworkID: "network2",
+					Config:    []byte("network 2 config"),
+				},
+				{
+					InstanceIdent: aostypes.InstanceIdent{
+						ServiceID: "service1",
+						SubjectID: "subject2",
+						Instance:  2,
+					},
+					IP:        "192.169.1.2",
+					NetworkID: "network2",
+					Config:    []byte("network 2 config"),
+				},
+			},
+		},
+		{
+			removeInstance: aostypes.InstanceIdent{
+				ServiceID: "service1",
+				SubjectID: "subject2",
+				Instance:  1,
+			},
+			expectedNetworkInfo: []networkmanager.NetworkInfo{
+				{
+					InstanceIdent: aostypes.InstanceIdent{
+						ServiceID: "service1",
+						SubjectID: "subject2",
+						Instance:  2,
+					},
+					NetworkID: "network2",
+					IP:        "192.169.1.2",
+					Config:    []byte("network 2 config"),
+				},
+			},
+		},
+		{
+			removeInstance: aostypes.InstanceIdent{
+				ServiceID: "service1",
+				SubjectID: "subject2",
+				Instance:  2,
+			},
+			expectedNetworkInfo: nil,
+		},
+	}
+
+	for _, tCase := range casesRemove {
+		if err := db.RemoveNetworkInstanceInfo(tCase.removeInstance); err != nil {
+			t.Errorf("Can't remove network info: %v", err)
+		}
+
+		networkInfo, err := db.GetNetworkInstancesInfo()
+		if err != nil {
+			t.Errorf("Can't get network info: %v", err)
+		}
+
+		if !reflect.DeepEqual(networkInfo, tCase.expectedNetworkInfo) {
+			t.Error("Unexpected network info")
 		}
 	}
 }
