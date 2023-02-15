@@ -30,6 +30,7 @@ import (
 
 	"github.com/aoscloud/aos_common/aostypes"
 	"github.com/aoscloud/aos_common/api/cloudprotocol"
+	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/aoscloud/aos_communicationmanager/config"
@@ -278,6 +279,14 @@ func TestServiceStore(t *testing.T) {
 					Quotas: aostypes.ServiceQuotas{
 						UploadSpeed:   allocateUint64(1000),
 						DownloadSpeed: allocateUint64(1000),
+					},
+				},
+				ImageConfig: imagespec.Image{
+					Config: imagespec.ImageConfig{
+						ExposedPorts: map[string]struct{}{
+							"10001": {},
+							"10002": {},
+						},
 					},
 				},
 			},

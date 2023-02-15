@@ -368,8 +368,9 @@ func (db *Database) GetServicesInfo() ([]imagemanager.ServiceInfo, error) {
 // GetServiceInfo returns service info by ID.
 func (db *Database) GetServiceInfo(serviceID string) (service imagemanager.ServiceInfo, err error) {
 	var (
-		configJSON []byte
-		layers     []byte
+		configJSON  []byte
+		layers      []byte
+		imageConfig []byte
 	)
 
 	if err = db.getDataFromQuery(
@@ -377,7 +378,7 @@ func (db *Database) GetServiceInfo(serviceID string) (service imagemanager.Servi
 		[]any{serviceID, serviceID},
 		&service.ID, &service.AosVersion, &service.ProviderID, &service.VendorVersion, &service.Description,
 		&service.URL, &service.RemoteURL, &service.Path, &service.Size, &service.Timestamp, &service.Cached,
-		&configJSON, &layers, &service.Sha256, &service.Sha512, &service.GID); err != nil {
+		&configJSON, &imageConfig, &layers, &service.Sha256, &service.Sha512, &service.GID); err != nil {
 		if errors.Is(err, errNotExist) {
 			return service, imagemanager.ErrNotExist
 		}
@@ -390,6 +391,10 @@ func (db *Database) GetServiceInfo(serviceID string) (service imagemanager.Servi
 	}
 
 	if err = json.Unmarshal(layers, &service.Layers); err != nil {
+		return service, aoserrors.Wrap(err)
+	}
+
+	if err = json.Unmarshal(imageConfig, &service.ImageConfig); err != nil {
 		return service, aoserrors.Wrap(err)
 	}
 
@@ -408,10 +413,15 @@ func (db *Database) AddService(service imagemanager.ServiceInfo) error {
 		return aoserrors.Wrap(err)
 	}
 
-	return db.executeQuery("INSERT INTO services values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	imageConfig, err := json.Marshal(&service.ImageConfig)
+	if err != nil {
+		return aoserrors.Wrap(err)
+	}
+
+	return db.executeQuery("INSERT INTO services values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		service.ID, service.AosVersion, service.ProviderID, service.VendorVersion, service.Description,
 		service.URL, service.RemoteURL, service.Path, service.Size, service.Timestamp, service.Cached,
-		configJSON, layers, service.Sha256, service.Sha512, service.GID)
+		configJSON, imageConfig, layers, service.Sha256, service.Sha512, service.GID)
 }
 
 // SetServiceCached sets cached status for the service.
@@ -756,6 +766,7 @@ func (db *Database) createServiceTable() (err error) {
                                                                timestamp TIMESTAMP,
                                                                cached INTEGER,
                                                                config BLOB,
+                                                               imageConfig BLOB,
                                                                layers BLOB,
                                                                sha256 BLOB,
                                                                sha512 BLOB,
@@ -880,14 +891,15 @@ func (db *Database) getServicesFromQuery(
 
 	for rows.Next() {
 		var (
-			service    imagemanager.ServiceInfo
-			configJSON []byte
-			layers     []byte
+			service     imagemanager.ServiceInfo
+			configJSON  []byte
+			layers      []byte
+			imageConfig []byte
 		)
 
 		if err = rows.Scan(&service.ID, &service.AosVersion, &service.ProviderID, &service.VendorVersion,
 			&service.Description, &service.URL, &service.RemoteURL, &service.Path, &service.Size,
-			&service.Timestamp, &service.Cached, &configJSON, &layers, &service.Sha256,
+			&service.Timestamp, &service.Cached, &configJSON, &imageConfig, &layers, &service.Sha256,
 			&service.Sha512, &service.GID); err != nil {
 			return nil, aoserrors.Wrap(err)
 		}
@@ -897,6 +909,10 @@ func (db *Database) getServicesFromQuery(
 		}
 
 		if err = json.Unmarshal(layers, &service.Layers); err != nil {
+			return nil, aoserrors.Wrap(err)
+		}
+
+		if err = json.Unmarshal(imageConfig, &service.ImageConfig); err != nil {
 			return nil, aoserrors.Wrap(err)
 		}
 
