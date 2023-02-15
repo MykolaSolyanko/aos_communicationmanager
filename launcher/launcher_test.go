@@ -20,6 +20,7 @@ package launcher_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	"github.com/aoscloud/aos_communicationmanager/config"
 	"github.com/aoscloud/aos_communicationmanager/imagemanager"
 	"github.com/aoscloud/aos_communicationmanager/launcher"
+	"github.com/aoscloud/aos_communicationmanager/networkmanager"
 	"github.com/aoscloud/aos_communicationmanager/storagestate"
 	"github.com/aoscloud/aos_communicationmanager/unitstatushandler"
 )
@@ -84,6 +86,10 @@ type testStateStorage struct {
 	cleanedInstances []aostypes.InstanceIdent
 }
 
+type testNetworkManager struct {
+	networkInfo map[string]map[aostypes.InstanceIdent]struct{}
+}
+
 /***********************************************************************************************************************
  * Init
  **********************************************************************************************************************/
@@ -118,7 +124,9 @@ func TestInitialStatus(t *testing.T) {
 	)
 
 	launcherInstance, err := launcher.New(
-		cfg, testStorage, nodeManager, nil, &testResourceManager{}, stateStorageProvider)
+		cfg, testStorage, nodeManager, nil, &testResourceManager{}, stateStorageProvider, &testNetworkManager{
+			networkInfo: make(map[string]map[aostypes.InstanceIdent]struct{}),
+		})
 	if err != nil {
 		t.Fatalf("Can't create launcher %v", err)
 	}
@@ -192,7 +200,9 @@ func TestBalancing(t *testing.T) {
 	resourceManager.nodeResources["runxSMType"] = aostypes.NodeUnitConfig{Priority: 100}
 
 	launcherInstance, err := launcher.New(
-		cfg, &testStorage{}, nodeManager, imageManager, resourceManager, stateStorageProvider)
+		cfg, &testStorage{}, nodeManager, imageManager, resourceManager, stateStorageProvider, &testNetworkManager{
+			networkInfo: make(map[string]map[aostypes.InstanceIdent]struct{}),
+		})
 	if err != nil {
 		t.Fatalf("Can't create launcher %v", err)
 	}
@@ -293,14 +303,17 @@ func TestBalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "serv1", SubjectID: "subj1", Instance: 0},
 					UID:           5000, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "serv1", SubjectID: "subj1", Instance: 1},
 					UID:           5001, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 1"),
 				},
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "serv2", SubjectID: "subj1", Instance: 0},
 					UID:           5002, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -321,6 +334,7 @@ func TestBalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "runxServ1", SubjectID: "subj2", Instance: 0},
 					UID:           5003, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -458,7 +472,9 @@ func TestBalancingByUnitConfiguration(t *testing.T) {
 	}
 
 	launcherInstance, err := launcher.New(
-		cfg, &testStorage{}, nodeManager, imageManager, resourceManager, &testStateStorage{})
+		cfg, &testStorage{}, nodeManager, imageManager, resourceManager, &testStateStorage{}, &testNetworkManager{
+			networkInfo: make(map[string]map[aostypes.InstanceIdent]struct{}),
+		})
 	if err != nil {
 		t.Fatalf("Can't create launcher: %v", err)
 	}
@@ -526,6 +542,7 @@ func TestBalancingByUnitConfiguration(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "serv2", SubjectID: "subj1", Instance: 0},
 					UID:           5001, Priority: 90, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -540,6 +557,7 @@ func TestBalancingByUnitConfiguration(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "serv2", SubjectID: "subj1", Instance: 1},
 					UID:           5002, Priority: 90, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 1"),
 				},
 			},
 		},
@@ -555,6 +573,7 @@ func TestBalancingByUnitConfiguration(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "serv1", SubjectID: "subj1", Instance: 0},
 					UID:           5000, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -702,7 +721,9 @@ func TestRebalancing(t *testing.T) {
 	}
 
 	launcherInstance, err := launcher.New(
-		cfg, &testStorage{}, nodeManager, imageManager, resourceManager, &testStateStorage{})
+		cfg, &testStorage{}, nodeManager, imageManager, resourceManager, &testStateStorage{}, &testNetworkManager{
+			networkInfo: make(map[string]map[aostypes.InstanceIdent]struct{}),
+		})
 	if err != nil {
 		t.Fatalf("Can't create launcher %v", err)
 	}
@@ -776,10 +797,12 @@ func TestRebalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servNoDev", SubjectID: "subj1", Instance: 0},
 					UID:           5001, Priority: 90, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servCommonDev", SubjectID: "subj1", Instance: 0},
 					UID:           5002, Priority: 50, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -794,6 +817,7 @@ func TestRebalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servCommonDev", SubjectID: "subj1", Instance: 1},
 					UID:           5003, Priority: 50, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 1"),
 				},
 			},
 		},
@@ -813,10 +837,12 @@ func TestRebalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servRes1", SubjectID: "subj1", Instance: 0},
 					UID:           5000, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servCommonDev", SubjectID: "subj1", Instance: 2},
 					UID:           5004, Priority: 50, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 2"),
 				},
 			},
 		},
@@ -895,6 +921,7 @@ func TestRebalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servNoDev", SubjectID: "subj1", Instance: 0},
 					UID:           5001, Priority: 90, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -909,6 +936,7 @@ func TestRebalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servCommonDev", SubjectID: "subj1", Instance: 1},
 					UID:           5003, Priority: 50, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 1"),
 				},
 			},
 		},
@@ -928,14 +956,17 @@ func TestRebalancing(t *testing.T) {
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servRes1", SubjectID: "subj1", Instance: 0},
 					UID:           5000, Priority: 100, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servCommonDev", SubjectID: "subj1", Instance: 2},
 					UID:           5004, Priority: 50, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 2"),
 				},
 				{
 					InstanceIdent: aostypes.InstanceIdent{ServiceID: "servCommonDev", SubjectID: "subj1", Instance: 0},
 					UID:           5002, Priority: 50, StoragePath: "", StatePath: "",
+					NetworkConfiguration: []byte("network instance 0"),
 				},
 			},
 		},
@@ -1169,6 +1200,30 @@ func (testProvider *testImageProvider) RevertService(serviceID string) error {
 	testProvider.revertedServices = append(testProvider.revertedServices, serviceID)
 
 	return nil
+}
+
+func (network *testNetworkManager) PrepareInstanceNetworkConf(
+	instanceIdent aostypes.InstanceIdent, networkID string, params networkmanager.NetworkParams,
+) ([]byte, error) {
+	if len(network.networkInfo[networkID]) == 0 {
+		network.networkInfo[networkID] = make(map[aostypes.InstanceIdent]struct{})
+	}
+
+	network.networkInfo[networkID][instanceIdent] = struct{}{}
+
+	return []byte(fmt.Sprintf("network instance %d", instanceIdent.Instance)), nil
+}
+
+func (network *testNetworkManager) RemoveInstanceNetworkConf(instanceIdent aostypes.InstanceIdent, networkID string) {
+	delete(network.networkInfo[networkID], instanceIdent)
+}
+
+func (network *testNetworkManager) GetInstances(networkID string) (instances []aostypes.InstanceIdent) {
+	for instanceIdent := range network.networkInfo[networkID] {
+		instances = append(instances, instanceIdent)
+	}
+
+	return instances
 }
 
 /***********************************************************************************************************************
