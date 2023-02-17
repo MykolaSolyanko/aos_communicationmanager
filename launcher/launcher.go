@@ -76,6 +76,7 @@ type Launcher struct {
 	imageProvider           ImageProvider
 	resourceManager         ResourceManager
 	storageStateProvider    StorageStateProvider
+	networkManager          NetworkManager
 	runStatusChannel        chan unitstatushandler.RunInstancesStatus
 	nodes                   []*nodeStatus
 	uidPool                 *uidgidpool.IdentifierPool
@@ -95,6 +96,14 @@ type Storage interface {
 	GetAllUIDs() ([]int, error)
 	SetDesiredInstances(instances json.RawMessage) error
 	GetDesiredInstances() (instances json.RawMessage, err error)
+}
+
+// NetworkManager network manager interface.
+type NetworkManager interface {
+	PrepareInstanceNetworkParameters(
+		instanceIdent aostypes.InstanceIdent, networkID string) (aostypes.NetworkParameters, error)
+	RemoveInstanceNetworkParameters(instanceIdent aostypes.InstanceIdent, networkID string)
+	GetInstances(networkID string) []aostypes.InstanceIdent
 }
 
 // ImageProvider provides image information.
@@ -159,11 +168,12 @@ type runRequestInfo struct {
 // New creates launcher instance.
 func New(
 	config *config.Config, storage Storage, nodeManager NodeManager, imageProvider ImageProvider,
-	resourceManager ResourceManager, storageStateProvider StorageStateProvider,
+	resourceManager ResourceManager, storageStateProvider StorageStateProvider, networkManager NetworkManager,
 ) (launcher *Launcher, err error) {
 	launcher = &Launcher{
 		config: config, storage: storage, nodeManager: nodeManager, imageProvider: imageProvider,
 		resourceManager: resourceManager, storageStateProvider: storageStateProvider,
+		networkManager:   networkManager,
 		runStatusChannel: make(chan unitstatushandler.RunInstancesStatus, 10),
 		nodes:            []*nodeStatus{},
 		uidPool:          uidgidpool.NewUserIDPool(),
@@ -633,6 +643,8 @@ instancesLoop:
 			continue
 		}
 
+		launcher.removeInstanceNetworkParameters(instance, serviceInfo.ProviderID)
+
 		for instanceIndex := uint64(0); instanceIndex < instance.NumInstances; instanceIndex++ {
 			instanceInfo, err := launcher.prepareInstanceStartInfo(serviceInfo, instance, instanceIndex)
 			if err != nil {
@@ -659,6 +671,28 @@ instancesLoop:
 	}
 
 	return errStatus
+}
+
+func (launcher *Launcher) removeInstanceNetworkParameters(
+	instance cloudprotocol.InstanceInfo, networkID string,
+) {
+	networkInstances := launcher.networkManager.GetInstances(networkID)
+
+nextNetInstance:
+	for _, netInstance := range networkInstances {
+		for instanceIndex := uint64(0); instanceIndex < instance.NumInstances; instanceIndex++ {
+			instanceIdent := aostypes.InstanceIdent{
+				ServiceID: instance.ServiceID, SubjectID: instance.SubjectID,
+				Instance: instanceIndex,
+			}
+
+			if netInstance == instanceIdent {
+				continue nextNetInstance
+			}
+		}
+
+		launcher.networkManager.RemoveInstanceNetworkParameters(netInstance, networkID)
+	}
 }
 
 func (launcher *Launcher) prepareInstanceStartInfo(service imagemanager.ServiceInfo,
@@ -709,6 +743,11 @@ func (launcher *Launcher) prepareInstanceStartInfo(service imagemanager.ServiceI
 		_ = launcher.uidPool.RemoveID(uid)
 
 		return instanceInfo, aoserrors.Errorf("can't setup storage and state for instance: %v", err)
+	}
+
+	if instanceInfo.NetworkParameters, err = launcher.networkManager.PrepareInstanceNetworkParameters(
+		instanceInfo.InstanceIdent, service.ProviderID); err != nil {
+		return instanceInfo, aoserrors.Wrap(err)
 	}
 
 	return instanceInfo, nil
