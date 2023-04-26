@@ -18,9 +18,13 @@
 package networkmanager_test
 
 import (
+	"io/ioutil"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/aoscloud/aos_common/aoserrors"
 	"github.com/aoscloud/aos_common/aostypes"
@@ -43,6 +47,14 @@ type testStore struct {
 	networkInfos map[aostypes.InstanceIdent]networkmanager.NetworkInfo
 }
 
+type testShellCommand struct{}
+
+/***********************************************************************************************************************
+ * Vars
+ **********************************************************************************************************************/
+
+var tmpDir string
+
 /***********************************************************************************************************************
  * Init
  **********************************************************************************************************************/
@@ -62,7 +74,13 @@ func init() {
  **********************************************************************************************************************/
 
 func TestMain(m *testing.M) {
+	if err := setup(); err != nil {
+		log.Fatalf("Error setting up: %s", err)
+	}
+
 	ret := m.Run()
+
+	cleanup()
 
 	os.Exit(ret)
 }
@@ -79,12 +97,15 @@ func TestBaseNetwork(t *testing.T) {
 
 	networkmanager.GetIPSubnet = ipam.getIPSubnet
 	networkmanager.GetVlanID = getVlanID
+	networkmanager.LookPath = lookPath
+	networkmanager.DiscoverInterface = discoverInterface
+	networkmanager.ExecContext = newTestShellCommander
 
 	storage := &testStore{
 		networkInfos: make(map[aostypes.InstanceIdent]networkmanager.NetworkInfo),
 	}
 
-	manager, err := networkmanager.New(storage)
+	manager, err := networkmanager.New(storage, tmpDir)
 	if err != nil {
 		t.Fatalf("Can't create network manager: %v", err)
 	}
@@ -93,6 +114,7 @@ func TestBaseNetwork(t *testing.T) {
 		instance          aostypes.InstanceIdent
 		removeConfig      bool
 		networkParameters aostypes.NetworkParameters
+		hosts             []string
 	}{
 		{
 			networkParameters: aostypes.NetworkParameters{
@@ -105,6 +127,7 @@ func TestBaseNetwork(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  1,
 			},
+			hosts: []string{"hosts1"},
 		},
 		{
 			networkParameters: aostypes.NetworkParameters{
@@ -117,6 +140,7 @@ func TestBaseNetwork(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  2,
 			},
+			hosts: []string{"hosts2"},
 		},
 		{
 			networkParameters: aostypes.NetworkParameters{
@@ -129,6 +153,7 @@ func TestBaseNetwork(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  2,
 			},
+			hosts: []string{"hosts3"},
 		},
 		{
 			instance: aostypes.InstanceIdent{
@@ -136,6 +161,7 @@ func TestBaseNetwork(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  2,
 			},
+			hosts:        []string{"hosts4"},
 			removeConfig: true,
 		},
 		{
@@ -149,6 +175,7 @@ func TestBaseNetwork(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  2,
 			},
+			hosts: []string{"hosts5"},
 		},
 	}
 
@@ -159,14 +186,44 @@ func TestBaseNetwork(t *testing.T) {
 			continue
 		}
 
-		networkParameters, err := manager.PrepareInstanceNetworkParameters(data.instance, "network1")
+		networkParameters, err := manager.PrepareInstanceNetworkParameters(data.instance, "network1", data.hosts)
 		if err != nil {
 			t.Fatalf("Can't prepare instance network configuration: %v", err)
 		}
 
-		if networkParameters != data.networkParameters {
-			t.Errorf("Wrong network parameters: %v", data.networkParameters)
+		if networkParameters.IP != data.networkParameters.IP {
+			t.Errorf("Wrong IP: %v", data.networkParameters.IP)
 		}
+
+		if networkParameters.Subnet != data.networkParameters.Subnet {
+			t.Errorf("Wrong subnet: %v", data.networkParameters.Subnet)
+		}
+
+		if networkParameters.VlanID != data.networkParameters.VlanID {
+			t.Errorf("Wrong vlan id: %v", data.networkParameters.VlanID)
+		}
+
+		if len(networkParameters.DNSServers) != 1 {
+			t.Errorf("Wrong dns servers: %v", networkParameters.DNSServers)
+		}
+
+		if networkParameters.DNSServers[0] != "10.10.0.1" {
+			t.Errorf("Wrong dns servers: %v", networkParameters.DNSServers)
+		}
+	}
+
+	if err = manager.RestartDNSServer(); err != nil {
+		t.Fatalf("Can't restart dns server: %v", err)
+	}
+
+	hosts, err := ioutil.ReadFile(filepath.Join(tmpDir, "network", "addnhosts"))
+	if err != nil {
+		t.Fatalf("Can't read hosts file: %v", err)
+	}
+
+	expected := "172.17.0.2hosts1172.17.0.3hosts2172.17.0.4hosts5"
+	if removeSpaces(string(hosts)) != expected {
+		t.Errorf("Unexpected hosts file content: %v", string(hosts))
 	}
 
 	expectedInstancesIdent := []aostypes.InstanceIdent{
@@ -195,12 +252,15 @@ func TestNetworkStorage(t *testing.T) {
 	}
 
 	networkmanager.GetIPSubnet = ipam.getIPSubnet
+	networkmanager.LookPath = lookPath
+	networkmanager.DiscoverInterface = discoverInterface
+	networkmanager.ExecContext = newTestShellCommander
 
 	storage := &testStore{
 		networkInfos: make(map[aostypes.InstanceIdent]networkmanager.NetworkInfo),
 	}
 
-	manager, err := networkmanager.New(storage)
+	manager, err := networkmanager.New(storage, tmpDir)
 	if err != nil {
 		t.Fatalf("Can't create network manager: %v", err)
 	}
@@ -208,6 +268,7 @@ func TestNetworkStorage(t *testing.T) {
 	testData := []struct {
 		networkParameters aostypes.NetworkParameters
 		instance          aostypes.InstanceIdent
+		hosts             []string
 	}{
 		{
 			networkParameters: aostypes.NetworkParameters{
@@ -219,6 +280,7 @@ func TestNetworkStorage(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  1,
 			},
+			hosts: []string{"hosts1"},
 		},
 		{
 			networkParameters: aostypes.NetworkParameters{
@@ -230,17 +292,18 @@ func TestNetworkStorage(t *testing.T) {
 				SubjectID: "subject1",
 				Instance:  2,
 			},
+			hosts: []string{"hosts2"},
 		},
 	}
 
 	for _, data := range testData {
 		if _, err := manager.PrepareInstanceNetworkParameters(
-			data.instance, "network1"); err != nil {
+			data.instance, "network1", data.hosts); err != nil {
 			t.Fatalf("Can't prepare instance network configuration: %v", err)
 		}
 	}
 
-	manager1, err := networkmanager.New(storage)
+	manager1, err := networkmanager.New(storage, tmpDir)
 	if err != nil {
 		t.Fatalf("Can't create network manager: %v", err)
 	}
@@ -333,4 +396,44 @@ nextInstance:
 
 func getVlanID(networkID string) (uint64, error) {
 	return 1, nil
+}
+
+func setup() (err error) {
+	if tmpDir, err = ioutil.TempDir("", "aos_"); err != nil {
+		return aoserrors.Wrap(err)
+	}
+
+	return nil
+}
+
+func cleanup() {
+	if err := os.RemoveAll(tmpDir); err != nil {
+		log.Errorf("Can't remove tmp folder: %s", err)
+	}
+}
+
+func lookPath(file string) (string, error) {
+	return tmpDir, nil
+}
+
+func discoverInterface() (ip net.IP, err error) {
+	return net.ParseIP("10.10.0.1"), nil
+}
+
+func (cmd testShellCommand) CombinedOutput() ([]byte, error) {
+	return []byte{}, nil
+}
+
+func newTestShellCommander(name string, arg ...string) networkmanager.ShellCommand {
+	return testShellCommand{}
+}
+
+func removeSpaces(str string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+
+		return r
+	}, str)
 }
