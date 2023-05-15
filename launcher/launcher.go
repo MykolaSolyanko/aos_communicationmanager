@@ -35,6 +35,7 @@ import (
 
 	"github.com/aoscloud/aos_communicationmanager/config"
 	"github.com/aoscloud/aos_communicationmanager/imagemanager"
+	"github.com/aoscloud/aos_communicationmanager/networkmanager"
 	"github.com/aoscloud/aos_communicationmanager/storagestate"
 	"github.com/aoscloud/aos_communicationmanager/unitstatushandler"
 	"github.com/aoscloud/aos_communicationmanager/utils/uidgidpool"
@@ -101,10 +102,12 @@ type Storage interface {
 // NetworkManager network manager interface.
 type NetworkManager interface {
 	PrepareInstanceNetworkParameters(
-		instanceIdent aostypes.InstanceIdent, networkID string, hosts []string) (aostypes.NetworkParameters, error)
+		instanceIdent aostypes.InstanceIdent, networkID string,
+		params networkmanager.NetworkParameters) (aostypes.NetworkParameters, error)
 	RemoveInstanceNetworkParameters(instanceIdent aostypes.InstanceIdent, networkID string)
 	RestartDNSServer() error
 	GetInstances() []aostypes.InstanceIdent
+	UpdateProviderNetwork(providers []string, nodeID string) error
 }
 
 // ImageProvider provides image information.
@@ -227,10 +230,15 @@ func (launcher *Launcher) RunInstances(instances []cloudprotocol.InstanceInfo, n
 		}
 	}
 
+	if err := launcher.updateNetworks(instances); err != nil {
+		log.Errorf("Can't update networks: %v", err)
+	}
+
 	launcher.currentDesiredInstances = instances
 	launcher.pendingNewServices = newServices
 	launcher.currentErrorStatus = launcher.performNodeBalancing(instances)
 
+	// TODO: move restart dns server to performNodeBalancing
 	if err := launcher.networkManager.RestartDNSServer(); err != nil {
 		log.Errorf("Can't restart DNS server: %v", err)
 	}
@@ -610,6 +618,27 @@ currentInstancesloop:
 	}
 }
 
+func (launcher *Launcher) updateNetworks(instances []cloudprotocol.InstanceInfo) error {
+	providers := make([]string, len(instances))
+
+	for i, instance := range instances {
+		serviceInfo, err := launcher.imageProvider.GetServiceInfo(instance.ServiceID)
+		if err != nil {
+			return aoserrors.Wrap(err)
+		}
+
+		providers[i] = serviceInfo.ProviderID
+	}
+
+	for _, node := range launcher.nodes {
+		if err := launcher.networkManager.UpdateProviderNetwork(providers, node.NodeID); err != nil {
+			return aoserrors.Wrap(err)
+		}
+	}
+
+	return nil
+}
+
 func (launcher *Launcher) performNodeBalancing(instances []cloudprotocol.InstanceInfo,
 ) (errStatus []cloudprotocol.InstanceStatus) {
 	for _, node := range launcher.nodes {
@@ -625,7 +654,7 @@ instancesLoop:
 		serviceInfo, err := launcher.imageProvider.GetServiceInfo(instance.ServiceID)
 		if err != nil {
 			log.WithField("serviceID", instance.ServiceID).Errorf("Can't get service info: %v", err)
-			errStatus = append(errStatus, createInstanceStatusFromInfo(instance, 0, 0,
+			errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID, 0, 0,
 				cloudprotocol.InstanceStateFailed, err.Error()))
 
 			continue
@@ -634,8 +663,8 @@ instancesLoop:
 		layers, err := launcher.getLayersForService(serviceInfo.Layers)
 		if err != nil {
 			log.Errorf("Can't get layer: %v", err)
-			errStatus = append(errStatus, createInstanceStatusFromInfo(instance, 0, serviceInfo.AosVersion,
-				cloudprotocol.InstanceStateFailed, err.Error()))
+			errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID,
+				0, serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, err.Error()))
 
 			continue instancesLoop
 		}
@@ -653,8 +682,8 @@ instancesLoop:
 		for instanceIndex := uint64(0); instanceIndex < instance.NumInstances; instanceIndex++ {
 			instanceInfo, err := launcher.prepareInstanceStartInfo(serviceInfo, instance, instanceIndex)
 			if err != nil {
-				errStatus = append(errStatus, createInstanceStatusFromInfo(instance, instanceIndex,
-					serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, err.Error()))
+				errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID,
+					instanceIndex, serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, err.Error()))
 			}
 
 			nodeForInstance := launcher.getNodesByDevices(nodes, serviceInfo.Config.Devices)
@@ -663,8 +692,8 @@ instancesLoop:
 					ServiceID: instance.ServiceID, SubjectID: instance.SubjectID, Instance: instanceIndex,
 				}, nil)).Error("No devices for instance")
 
-				errStatus = append(errStatus, createInstanceStatusFromInfo(instance, instanceIndex,
-					serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, "no devices for instance"))
+				errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID,
+					instanceIndex, serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, "no devices for instance"))
 
 				continue
 			}
@@ -675,7 +704,102 @@ instancesLoop:
 		}
 	}
 
+	// first prepare network for instance which have exposed ports
+	errNetworkStatus := launcher.prepareNetworkForInstances(true)
+	errStatus = append(errStatus, errNetworkStatus...)
+
+	// then prepare network for rest of instances
+	errNetworkStatus = launcher.prepareNetworkForInstances(false)
+	errStatus = append(errStatus, errNetworkStatus...)
+
 	return errStatus
+}
+
+func (launcher *Launcher) prepareNetworkForInstances(onlyExposedPorts bool) (errStatus []cloudprotocol.InstanceStatus) {
+	for _, node := range launcher.nodes {
+		for i, instance := range node.currentRunRequest.instances {
+			serviceInfo, err := launcher.imageProvider.GetServiceInfo(instance.ServiceID)
+			if err != nil {
+				log.WithField("serviceID", instance.ServiceID).Errorf("Can't get service info: %v", err)
+				errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID, 0, 0,
+					cloudprotocol.InstanceStateFailed, err.Error()))
+
+				continue
+			}
+
+			if onlyExposedPorts && len(serviceInfo.ExposedPorts) == 0 {
+				continue
+			}
+
+			if instance.NetworkParameters, err = launcher.networkManager.PrepareInstanceNetworkParameters(
+				instance.InstanceIdent, serviceInfo.ProviderID,
+				prepareNetworkParameters(instance, serviceInfo)); err != nil {
+				log.WithFields(instanceIdentLogFields(instance.InstanceIdent, nil)).Errorf("Can't prepare network: %v", err)
+
+				errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID,
+					instance.Instance, serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, err.Error()))
+			}
+
+			node.currentRunRequest.instances[i] = instance
+		}
+	}
+
+	// // then prepare network for rest instances
+	// for _, node := range launcher.nodes {
+	// 	for i, instance := range node.currentRunRequest.instances {
+	// 		serviceInfo, err := launcher.imageProvider.GetServiceInfo(instance.ServiceID)
+	// 		if err != nil {
+	// 			log.WithField("serviceID", instance.ServiceID).Errorf("Can't get service info: %v", err)
+	// 			errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID, 0, 0,
+	// 				cloudprotocol.InstanceStateFailed, err.Error()))
+
+	// 			continue
+	// 		}
+
+	// 		if instance.NetworkParameters, err = launcher.networkManager.PrepareInstanceNetworkParameters(
+	// 			instance.InstanceIdent, serviceInfo.ProviderID,
+	// 			prepareNetworkParameters(instance, serviceInfo)); err != nil {
+	// 			log.WithFields(instanceIdentLogFields(instance.InstanceIdent, nil)).Errorf("Can't prepare network: %v", err)
+
+	// 			errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID,
+	// 				instance.Instance, serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, err.Error()))
+	// 		}
+
+	// 		node.currentRunRequest.instances[i] = instance
+	// 	}
+	// }
+
+	return errStatus
+}
+
+func prepareNetworkParameters(
+	instance aostypes.InstanceInfo, serviceInfo imagemanager.ServiceInfo,
+) networkmanager.NetworkParameters {
+	var hosts []string
+	if serviceInfo.Config.Hostname != nil {
+		hosts = append(hosts, *serviceInfo.Config.Hostname)
+	}
+
+	if instance.ServiceID != "" && instance.SubjectID != "" {
+		hosts = append(hosts, fmt.Sprintf("%d.%s.%s", instance.Instance, instance.SubjectID, instance.ServiceID))
+
+		if instance.Instance == 0 {
+			hosts = append(hosts, fmt.Sprintf("%s.%s", instance.SubjectID, instance.ServiceID))
+		}
+	}
+
+	params := networkmanager.NetworkParameters{
+		Hosts:       hosts,
+		ExposePorts: serviceInfo.ExposedPorts,
+	}
+
+	params.AllowConnections = make([]string, 0, len(serviceInfo.Config.AllowedConnections))
+
+	for key := range serviceInfo.Config.AllowedConnections {
+		params.AllowConnections = append(params.AllowConnections, key)
+	}
+
+	return params
 }
 
 func (launcher *Launcher) removeInstanceNetworkParameters(instances []cloudprotocol.InstanceInfo) {
@@ -756,23 +880,34 @@ func (launcher *Launcher) prepareInstanceStartInfo(service imagemanager.ServiceI
 		return instanceInfo, aoserrors.Errorf("can't setup storage and state for instance: %v", err)
 	}
 
-	var hosts []string
-	if service.Config.Hostname != nil {
-		hosts = append(hosts, *service.Config.Hostname)
-	}
+	// var hosts []string
+	// if service.Config.Hostname != nil {
+	// 	hosts = append(hosts, *service.Config.Hostname)
+	// }
 
-	if instance.ServiceID != "" && instance.SubjectID != "" {
-		hosts = append(hosts, fmt.Sprintf("%d.%s.%s", index, instance.SubjectID, instance.ServiceID))
+	// if instance.ServiceID != "" && instance.SubjectID != "" {
+	// 	hosts = append(hosts, fmt.Sprintf("%d.%s.%s", index, instance.SubjectID, instance.ServiceID))
 
-		if index == 0 {
-			hosts = append(hosts, fmt.Sprintf("%s.%s", instance.SubjectID, instance.ServiceID))
-		}
-	}
+	// 	if index == 0 {
+	// 		hosts = append(hosts, fmt.Sprintf("%s.%s", instance.SubjectID, instance.ServiceID))
+	// 	}
+	// }
 
-	if instanceInfo.NetworkParameters, err = launcher.networkManager.PrepareInstanceNetworkParameters(
-		instanceInfo.InstanceIdent, service.ProviderID, hosts); err != nil {
-		return instanceInfo, aoserrors.Wrap(err)
-	}
+	// params := networkmanager.NetworkParameters{
+	// 	Hosts:       hosts,
+	// 	ExposePorts: service.ExposedPorts,
+	// }
+
+	// params.AllowConnections = make([]string, 0, len(service.Config.AllowedConnections))
+
+	// for key := range service.Config.AllowedConnections {
+	// 	params.AllowConnections = append(params.AllowConnections, key)
+	// }
+
+	// if instanceInfo.NetworkParameters, err = launcher.networkManager.PrepareInstanceNetworkParameters(
+	// 	instanceInfo.InstanceIdent, service.ProviderID, params); err != nil {
+	// 	return instanceInfo, aoserrors.Wrap(err)
+	// }
 
 	return instanceInfo, nil
 }
@@ -788,8 +923,8 @@ func (launcher *Launcher) getNodesByStaticResources(allNodes []*nodeStatus,
 
 		log.Errorf("No appropriate node with runner: %s", serviceInfo.Config.Runner)
 
-		return nodes, createInstanceStatusFromInfo(instanceInfo, 0, serviceInfo.AosVersion,
-			cloudprotocol.InstanceStateFailed, fmt.Sprintf(
+		return nodes, createInstanceStatusFromInfo(instanceInfo.ServiceID, instanceInfo.SubjectID, 0,
+			serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, fmt.Sprintf(
 				"no appropriate node with runner: %s", serviceInfo.Config.Runner))
 	}
 
@@ -801,8 +936,8 @@ func (launcher *Launcher) getNodesByStaticResources(allNodes []*nodeStatus,
 
 		log.Errorf("No appropriate node with resources: %v", serviceInfo.Config.Resources)
 
-		return nodes, createInstanceStatusFromInfo(instanceInfo, 0, serviceInfo.AosVersion,
-			cloudprotocol.InstanceStateFailed, fmt.Sprintf(
+		return nodes, createInstanceStatusFromInfo(instanceInfo.ServiceID, instanceInfo.SubjectID, 0,
+			serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, fmt.Sprintf(
 				"no appropriate node with resourceser: %v", serviceInfo.Config.Resources))
 	}
 
@@ -814,8 +949,8 @@ func (launcher *Launcher) getNodesByStaticResources(allNodes []*nodeStatus,
 
 		log.Errorf("No appropriate node with labels %v", instanceInfo.Labels)
 
-		return nodes, createInstanceStatusFromInfo(instanceInfo, 0, serviceInfo.AosVersion,
-			cloudprotocol.InstanceStateFailed, fmt.Sprintf(
+		return nodes, createInstanceStatusFromInfo(instanceInfo.ServiceID, instanceInfo.SubjectID, 0,
+			serviceInfo.AosVersion, cloudprotocol.InstanceStateFailed, fmt.Sprintf(
 				"no appropriate node with labels: %v", instanceInfo.Labels))
 	}
 
@@ -1072,11 +1207,11 @@ layerLoopLabel:
 }
 
 func createInstanceStatusFromInfo(
-	info cloudprotocol.InstanceInfo, instanceIndex, serviceVersion uint64, runState, errorMsg string,
+	serviceID, subjectID string, instanceIndex, serviceVersion uint64, runState, errorMsg string,
 ) cloudprotocol.InstanceStatus {
 	instanceStatus := cloudprotocol.InstanceStatus{
 		InstanceIdent: aostypes.InstanceIdent{
-			ServiceID: info.ServiceID, SubjectID: info.SubjectID, Instance: instanceIndex,
+			ServiceID: serviceID, SubjectID: subjectID, Instance: instanceIndex,
 		},
 		AosVersion: serviceVersion, RunState: runState,
 	}

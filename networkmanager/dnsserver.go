@@ -126,7 +126,7 @@ func (dns *dnsServer) getAddress() string {
 
 func (dns *dnsServer) addHosts(hosts []string, ip string) error {
 	if _, ok := dns.hosts[ip]; ok {
-		return aoserrors.Errorf("ip %s already exists", ip)
+		return nil
 	}
 
 	for _, host := range hosts {

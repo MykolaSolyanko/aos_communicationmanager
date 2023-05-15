@@ -4,6 +4,8 @@ go 1.18
 
 replace github.com/ThalesIgnite/crypto11 => github.com/aoscloud/crypto11 v1.0.3-0.20220217163524-ddd0ace39e6f
 
+replace github.com/aoscloud/aos_common => /home/mykola-solianko/epam/aos_common
+
 require (
 	code.cloudfoundry.org/bytefmt v0.0.0-20211005130812-5bb3c17173e5
 	github.com/aoscloud/aos_common v0.0.0-20230410084910-6f7518cc6f8a
@@ -14,6 +16,7 @@ require (
 	github.com/golang/protobuf v1.5.2
 	github.com/google/go-tpm v0.3.3
 	github.com/google/uuid v1.3.0
+	github.com/jackpal/gateway v1.0.10
 	github.com/looplab/fsm v0.3.0
 	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/opencontainers/go-digest v1.0.0
@@ -23,6 +26,7 @@ require (
 	github.com/vishvananda/netlink v1.1.0
 	golang.org/x/crypto v0.5.0
 	golang.org/x/exp v0.0.0-20230206171751-46f607a40771
+	golang.org/x/sys v0.6.0
 	google.golang.org/grpc v1.52.3
 	google.golang.org/protobuf v1.28.1
 )
@@ -48,8 +52,7 @@ require (
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df // indirect
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
-	golang.org/x/net v0.5.0 // indirect
-	golang.org/x/sys v0.4.0 // indirect
-	golang.org/x/text v0.6.0 // indirect
+	golang.org/x/net v0.8.0 // indirect
+	golang.org/x/text v0.8.0 // indirect
 	google.golang.org/genproto v0.0.0-20221118155620-16455021b5e6 // indirect
 )

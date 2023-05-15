@@ -166,11 +166,22 @@ type InstanceIdent struct {
 	Instance  uint64 `json:"instance"`
 }
 
+// FirewallRule firewall rule.
+type FirewallRule struct {
+	DstIP   string `json:"dstIp"`
+	DstPort string `json:"dstPort"`
+	Proto   string `json:"proto"`
+	SrcIP   string `json:"srcIp"`
+}
+
 // NetworkParameters networks parameters.
 type NetworkParameters struct {
-	Subnet string
-	IP     string
-	VlanID uint64
+	Subnet        string
+	IP            string
+	VlanID        uint64
+	NetworkID     string
+	DNSServers    []string
+	FirewallRules []FirewallRule
 }
 
 // InstanceInfo instance information to start it.
