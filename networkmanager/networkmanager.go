@@ -460,6 +460,8 @@ func (manager *NetworkManager) addProviderNetworks(
 ) (networkParameters []aostypes.NetworkParameters, err error) {
 	for _, providerID := range providers {
 		if networkParameter, ok := manager.providerNetworks[providerID]; ok {
+			log.Debugf("Network provider IP subnet %s already exists!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1", networkParameter.IP)
+
 			networkParameters = append(networkParameters, networkParameter)
 
 			continue
@@ -478,8 +480,12 @@ func (manager *NetworkManager) addProviderNetworks(
 			return nil, err
 		}
 
+		log.Debugf("Network provider IP subnet %s!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", subnet.String())
+
 		networkParameter.Subnet = subnet.String()
 		networkParameter.IP = cidr.Inc(subnet.IP).String()
+		log.Debugf("Network provider IP %s!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", networkParameter.IP)
+
 		manager.providerNetworks[providerID] = networkParameter
 
 		if err := manager.storage.AddNetworkInfo(NetworkInfo{

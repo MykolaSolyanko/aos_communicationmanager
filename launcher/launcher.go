@@ -666,6 +666,15 @@ instancesLoop:
 			continue
 		}
 
+		if serviceInfo.Cached {
+			log.WithField("serviceID", instance.ServiceID).Error("Can't start instances: service deleted")
+
+			errStatus = append(errStatus, createInstanceStatusFromInfo(instance.ServiceID, instance.SubjectID, 0, 0,
+				cloudprotocol.InstanceStateFailed, "service deleted"))
+
+			continue
+		}
+
 		layers, err := launcher.getLayersForService(serviceInfo.Layers)
 		if err != nil {
 			log.Errorf("Can't get layer: %v", err)
