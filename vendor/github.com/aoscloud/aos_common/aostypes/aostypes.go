@@ -208,17 +208,17 @@ type ServiceDevice struct {
 
 // ServiceQuotas service quotas representation.
 type ServiceQuotas struct {
-	CPULimit      *uint64 `json:"cpuLimit,omitempty"`
-	RAMLimit      *uint64 `json:"ramLimit,omitempty"`
-	PIDsLimit     *uint64 `json:"pidsLimit,omitempty"`
-	NoFileLimit   *uint64 `json:"noFileLimit,omitempty"`
-	TmpLimit      *uint64 `json:"tmpLimit,omitempty"`
-	StateLimit    *uint64 `json:"stateLimit,omitempty"`
-	StorageLimit  *uint64 `json:"storageLimit,omitempty"`
-	UploadSpeed   *uint64 `json:"uploadSpeed,omitempty"`
-	DownloadSpeed *uint64 `json:"downloadSpeed,omitempty"`
-	UploadLimit   *uint64 `json:"uploadLimit,omitempty"`
-	DownloadLimit *uint64 `json:"downloadLimit,omitempty"`
+	CPULimit      *uint64  `json:"cpuLimit,omitempty"`
+	RAMLimit      *uint64  `json:"ramLimit,omitempty"`
+	PIDsLimit     *uint64  `json:"pidsLimit,omitempty"`
+	NoFileLimit   *uint64  `json:"noFileLimit,omitempty"`
+	TmpLimit      *uint64  `json:"tmpLimit,omitempty"`
+	StateLimit    *uint64  `json:"stateLimit,omitempty"`
+	StorageLimit  *uint64  `json:"storageLimit,omitempty"`
+	UploadSpeed   *float64 `json:"uploadSpeed,omitempty"`
+	DownloadSpeed *float64 `json:"downloadSpeed,omitempty"`
+	UploadLimit   *uint64  `json:"uploadLimit,omitempty"`
+	DownloadLimit *uint64  `json:"downloadLimit,omitempty"`
 }
 
 // RunParameters service startup parameters.

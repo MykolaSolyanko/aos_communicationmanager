@@ -764,6 +764,11 @@ func (imagemanager *Imagemanager) getServiceDataFromManifest(
 		if err = json.Unmarshal(byteValue, &serviceConfig); err != nil {
 			return nil, nil, serviceConfig, aoserrors.Errorf("invalid Aos service config: %v", err)
 		}
+
+		var speed float64 = 6000
+
+		serviceConfig.Quotas.DownloadSpeed = &speed
+		// serviceConfig.Quotas.UploadSpeed = &speed
 	}
 
 	for exposedPort := range imageConfig.Config.ExposedPorts {
