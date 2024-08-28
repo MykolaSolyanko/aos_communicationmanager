@@ -138,7 +138,7 @@ func New(
 			return nil, aoserrors.Wrap(err)
 		}
 
-		tlsConfig, err := cryptcoxontext.GetClientMutualTLSConfig(certURL, keyURL)
+		tlsConfig, err := cryptcoxontext.GetServerMutualTLSConfig(certURL, keyURL)
 		if err != nil {
 			return nil, aoserrors.Wrap(err)
 		}
