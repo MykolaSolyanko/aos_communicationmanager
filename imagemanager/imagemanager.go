@@ -128,9 +128,6 @@ var (
 	// ErrNotExist not exist service error.
 	ErrNotExist = errors.New("service not exist")
 
-	// ErrVersionMismatch new service version <= existing one.
-	ErrVersionMismatch = errors.New("version mismatch")
-
 	// NewSpaceAllocator space allocator constructor.
 	//nolint:gochecknoglobals // used for unit test mock
 	NewSpaceAllocator = spaceallocator.New
@@ -310,8 +307,12 @@ func (imagemanager *Imagemanager) InstallService(serviceInfo cloudprotocol.Servi
 			return aoserrors.Wrap(err)
 		}
 
-		if version.LessThanOrEqual(versionInStorage) {
-			return ErrVersionMismatch
+		if version.LessThan(versionInStorage) {
+			return unitstatushandler.ErrVersionLess
+		}
+
+		if version.Equal(versionInStorage) {
+			return unitstatushandler.ErrorVersionEqual
 		}
 	}
 

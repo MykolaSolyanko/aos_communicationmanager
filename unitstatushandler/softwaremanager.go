@@ -110,6 +110,14 @@ type softwareManager struct {
 	TTLDate          time.Time                               `json:"ttlDate,omitempty"`
 }
 
+var (
+	// ErrVersionMismatch new service version < existing one.
+	ErrVersionLess = errors.New("version mismatch")
+
+	// ErrVersionEqual new service version = existing one.
+	ErrorVersionEqual = errors.New("version equal")
+)
+
 /***********************************************************************************************************************
  * Interface
  **********************************************************************************************************************/
@@ -611,11 +619,11 @@ func (manager *softwareManager) stateChanged(event, state string, updateErr erro
 		log.Errorf("Software update error: %v", updateErr)
 	}
 
-	manager.sendCurrentStatus()
-
 	if err := manager.saveState(); err != nil {
 		log.Errorf("Can't save current software manager state: %v", err)
 	}
+
+	manager.sendCurrentStatus()
 }
 
 func (manager *softwareManager) noUpdate() {
@@ -1307,6 +1315,15 @@ func (manager *softwareManager) installServices() (newServices []string, install
 			err := manager.softwareUpdater.InstallService(serviceInfo,
 				manager.CurrentUpdate.CertChains, manager.CurrentUpdate.Certs)
 			if err != nil {
+				if errors.Is(err, ErrorVersionEqual) {
+					log.WithFields(log.Fields{
+						"id":         serviceInfo.ServiceID,
+						"aosVersion": serviceInfo.Version,
+					}).Info("Service already installed")
+
+					return nil
+				}
+
 				handleError(serviceInfo, aoserrors.Wrap(err))
 				return aoserrors.Wrap(err)
 			}
