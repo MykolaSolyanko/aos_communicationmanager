@@ -130,7 +130,14 @@ func (ipam *ipSubnet) findUnusedIPSubnet() (unusedIPNet *net.IPNet, err error) {
 		return nil, err
 	}
 
+	// print networks
+	for _, nw := range networks {
+		log.Infof("network: %s", nw.String())
+	}
+
 	for i, nw := range ipam.predefinedPrivateNetworks {
+		log.Infof("Predefined network: %s", nw.String())
+
 		if !checkRouteOverlaps(nw, networks) {
 			ipam.predefinedPrivateNetworks = append(
 				ipam.predefinedPrivateNetworks[:i], ipam.predefinedPrivateNetworks[i+1:]...)

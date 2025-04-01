@@ -25,6 +25,8 @@ import (
 
 	"github.com/aosedge/aos_common/aoserrors"
 	"github.com/vishvananda/netlink"
+
+	log "github.com/sirupsen/logrus"
 )
 
 /***********************************************************************************************************************
@@ -48,7 +50,28 @@ func getNetworkRoutes() (routeIPList []netlink.Route, err error) {
 
 func checkRouteOverlaps(toCheck *net.IPNet, networks []netlink.Route) (overlapsIPs bool) {
 	for _, network := range networks {
-		if network.Dst != nil && (toCheck.Contains(network.Dst.IP) || network.Dst.Contains(toCheck.IP)) {
+		log.Infof("network: %s", network.String())
+		log.Infof("toCheck: %s", toCheck.String())
+
+		if network.Dst == nil {
+			log.Infof("network.Dst: nil")
+
+			continue
+		}
+
+		log.Infof("network.Dst: %s", network.Dst.String())
+		log.Infof("network.Dst.IP: %s", network.Dst.IP.String())
+		log.Infof("toCheck.IP: %s", toCheck.IP.String())
+
+		if network.Dst.String() == "0.0.0.0/0" {
+			if network.Gw != nil && toCheck.Contains(network.Gw) {
+				log.Infof("Default route with gateway %s is inside network %s", network.Gw.String(), toCheck.String())
+
+				return true
+			}
+		} else if toCheck.Contains(network.Dst.IP) || network.Dst.Contains(toCheck.IP) {
+			log.Infof("Network overlap detected")
+
 			return true
 		}
 	}
